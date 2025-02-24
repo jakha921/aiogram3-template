@@ -1,0 +1,16 @@
+__pycache__/
+venv/
+tmp/
+logs/
+.git
+.vscode
+.env
+.venv
+*.ini
+*.zip
+*.log
+.DS_Store
+.idea/*
+*.pyc
+*.sqlite!/
+script/
