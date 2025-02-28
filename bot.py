@@ -12,6 +12,7 @@ from tgbot.handlers.admin import register_admin
 from tgbot.handlers.group import register_group
 from tgbot.handlers.users import register_users
 from tgbot.middlewares.db import DbMiddleware
+from tgbot.middlewares.throttling import ThrottlingMiddleware
 from tgbot.services.database import create_db_session
 
 config = load_config(".env")
@@ -43,8 +44,8 @@ def init_logger():
 def register_all_middlewares(dp: Dispatcher):
     """Register all middlewares"""
     dp.update.middleware(DbMiddleware())
+    dp.message.middleware(ThrottlingMiddleware(limit=1.0)) # 1 message per second
     # dp.message.middleware(DbMiddleware())
-    # dp.setup_middleware(ThrottlingMiddleware())
 
 
 def register_all_filters(dp: Dispatcher):
