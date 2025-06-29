@@ -1,6 +1,7 @@
+import aiogram
 from typing import AsyncGenerator
 
-import asyncpg
+import aiomysql
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import sessionmaker
 
@@ -20,29 +21,31 @@ async def create_db_session(config: Config) -> AsyncGenerator[AsyncSession, None
         "database": config.db.database,
     }
 
-    print('postgres+asyncpg://{user}:{password}@{host}:{port}/{database}'.format(**auth_data))
+    print('mysql+aiomysql://{user}:{password}@{host}:{port}/{database}'.format(**auth_data))
 
     # Check if database exists and create if needed
     try:
-        conn = await asyncpg.connect(**{**auth_data, "database": "postgres"})
-        db_exists = await conn.fetchval(
-            "SELECT EXISTS(SELECT 1 FROM pg_database WHERE datname=$1)",
-            config.db.database
+        # Подключаемся без выбора БД
+        conn = await aiomysql.connect(
+            host=auth_data["host"],
+            port=int(auth_data["port"]),
+            user=auth_data["user"],
+            password=auth_data["password"]
         )
-        if not db_exists:
-            await conn.execute(f'CREATE DATABASE "{config.db.database}"')
-        await conn.close()
+        async with conn.cursor() as cur:
+            await cur.execute(f"CREATE DATABASE IF NOT EXISTS `{config.db.database}`")
+        conn.close()
     except Exception as e:
         print(f"Database initialization error: {e}")
         raise
 
     # Create async engine
     engine = create_async_engine(
-        f"postgresql+asyncpg://{auth_data['user']}:{auth_data['password']}@"
+        f"mysql+aiomysql://{auth_data['user']}:{auth_data['password']}@"
         f"{auth_data['host']}:{auth_data['port']}/{auth_data['database']}",
-        echo=False,  # Set to True to see SQL queries in the console
-        future=True,  # Enable new 2.0 async API
-        pool_pre_ping=False  # Check connection health before using
+        echo=False,
+        future=True,
+        pool_pre_ping=False
     )
 
     # Create tables

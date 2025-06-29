@@ -65,8 +65,9 @@ def register_all_handlers(dp: Dispatcher):
 async def set_bot_commands(bot: Bot):
     """Initialize bot commands for bot to preview them when typing slash \"/\""""
     commands = [
-        types.BotCommand(command="/start", description="Start the bot"),
-        types.BotCommand(command="/help", description="Get help"),
+        types.BotCommand(command="/start", description="Для начала работы с ботом"),
+        types.BotCommand(command="/admin", description="Админ панель"),
+        types.BotCommand(command="/stats", description="Статистика пользователей"),
     ]
     await bot.set_my_commands(commands, scope=BotCommandScopeDefault())
 

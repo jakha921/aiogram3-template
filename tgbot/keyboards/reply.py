@@ -5,7 +5,7 @@ async def phone_number_kb():
     """Back keyboard"""
     keyboard = ReplyKeyboardMarkup(
         keyboard=[
-            [KeyboardButton(text="📞Send phone number", request_contact=True)],
+            [KeyboardButton(text="📞 Отправить номер телефона", request_contact=True, one_time_keyboard=True)],
         ],
         resize_keyboard=True,
     )

@@ -1,4 +1,4 @@
-from sqlalchemy import Column, BigInteger, String, select, func, insert, update
+from sqlalchemy import Column, BigInteger, String, select, func, insert, update, literal_column, text
 from sqlalchemy.orm import sessionmaker
 
 from tgbot.services.db_base import Base
@@ -95,3 +95,173 @@ class TGUser(Base):
             sql = select(cls).where(**kwargs)
             user = await session.execute(sql)
             return user.scalar_one_or_none()
+
+    # get user invoice eby phone number and chosen month
+    @classmethod
+    async def get_user_invoice(cls, db_session: sessionmaker, phone: str, month: str):
+        """
+        Get user invoice by phone number and chosen month
+
+        SELECT
+            o.obj_name AS "Магазин/Склад",
+            g.gd_code AS "Код",
+            g.gd_name AS "Номенклатура",
+            s.sls_datetime AS "Дата/Время",
+            'Продажа' AS "Тип",
+            op.opr_quantity AS "Количество",
+            a.oap_price1 AS "Цена",
+            (op.opr_quantity * a.oap_price1) AS "Сумма",
+            dss.sords_name AS "Статус оплаты"
+        FROM doc_sales s
+        JOIN operations op
+            ON op.opr_document = s.sls_id AND op.opr_type = 2
+        JOIN operations_additional_prop a
+            ON a.oap_operation = op.opr_id
+        JOIN dir_goods g
+            ON g.gd_id = op.opr_good
+        JOIN dir_objects o
+            ON o.obj_id = s.sls_object
+        JOIN dir_customers c
+            ON c.cstm_id = s.sls_customer
+        JOIN dir_sales_status dss
+            ON dss.sords_id = s.sls_status
+        WHERE s.sls_datetime BETWEEN '2015-01-01' AND '2044-06-15'
+            AND s.sls_performed = 1
+            AND s.sls_deleted = 0
+            AND %s IN (c.cstm_phone, c.cstm_phone2, c.cstm_phone3, c.cstm_phone4)
+            AND dss.sords_name != 'Завершен'
+            AND EXTRACT(MONTH FROM s.sls_datetime) = %s"
+            ORDER BY s.sls_datetime DESC
+        """
+        async with db_session() as session:
+            stmt = select(
+                literal_column("o.obj_name").label("Магазин/Склад"),
+                literal_column("g.gd_code").label("Код"),
+                literal_column("g.gd_name").label("Номенклатура"),
+                literal_column("s.sls_datetime").label("Дата/Время"),
+                literal_column("'Продажа'").label("Тип"),
+                literal_column("op.opr_quantity").label("Количество"),
+                literal_column("a.oap_price1").label("Цена"),
+                (literal_column("op.opr_quantity") * literal_column("a.oap_price1")).label("Сумма"),
+                literal_column("dss.sords_name").label("Статус оплаты")
+            ).select_from(
+                text(
+                    "doc_sales s "
+                    "JOIN operations op ON op.opr_document = s.sls_id AND op.opr_type = 2 "
+                    "JOIN operations_additional_prop a ON a.oap_operation = op.opr_id "
+                    "JOIN dir_goods g ON g.gd_id = op.opr_good "
+                    "JOIN dir_objects o ON o.obj_id = s.sls_object "
+                    "JOIN dir_customers c ON c.cstm_id = s.sls_customer "
+                    "JOIN dir_sales_status dss ON dss.sords_id = s.sls_status"
+                )
+            ).where(
+                text("s.sls_datetime BETWEEN '2015-01-01' AND '2044-06-15'"),
+                text("s.sls_performed = 1"),
+                text("s.sls_deleted = 0"),
+                text(":phone IN (c.cstm_phone, c.cstm_phone2, c.cstm_phone3, c.cstm_phone4)"),
+                text("dss.sords_name != 'Завершен'"),
+                text("EXTRACT(MONTH FROM s.sls_datetime) = :month")
+            ).order_by(text("s.sls_datetime DESC"))
+            result = await session.execute(stmt, {"phone": phone, "month": month})
+            return result.fetchall()
+
+
+    @classmethod
+    async def get_all_sales_invoices_summary(cls, db_session: sessionmaker):
+        """
+        Retrieves a summary of all sales invoices from the database.
+
+        This method fetches the sales ID, datetime, operation type, store/warehouse name,
+        document status, customer name, and the total sum of the sale for all
+        performed and non-deleted sales.
+
+        Args:
+            db_session: The SQLAlchemy sessionmaker object for database interaction.
+
+        Returns:
+            A list of dictionaries, where each dictionary represents a row from the
+            query result, containing the summarized sales invoice data.
+        """
+        async with db_session() as session:
+            stmt = select(
+                literal_column("s.sls_id").label("Код"),
+                literal_column("s.sls_datetime").label("Дата/время"),
+                literal_column("'Продажа'").label("Тип операции"),
+                literal_column("o.obj_name").label("Магазин/Склад"),
+                literal_column("dss.sords_name").label("Статус документа"),
+                literal_column("c.cstm_name").label("Покупатель"),
+                func.sum(literal_column("op.opr_quantity") * literal_column("a.oap_price1")).label("Сумма продажи")
+            ).select_from(
+                text(
+                    "doc_sales AS s "
+                    "JOIN dir_objects AS o ON s.sls_object = o.obj_id "
+                    "JOIN dir_sales_status AS dss ON s.sls_status = dss.sords_id "
+                    "JOIN dir_customers AS c ON s.sls_customer = c.cstm_id "
+                    "JOIN operations AS op ON op.opr_document = s.sls_id AND op.opr_type = 2 "
+                    "JOIN operations_additional_prop AS a ON a.oap_operation = op.opr_id"
+                )
+            ).where(
+                text("s.sls_performed = 1"),
+                text("s.sls_deleted = 0")
+            ).group_by(
+                text("s.sls_id"),
+                text("s.sls_datetime"),
+                text("o.obj_name"),
+                text("dss.sords_name"),
+                text("c.cstm_name")
+            ).order_by(
+                text("s.sls_datetime DESC"),
+                text("s.sls_id DESC")
+            )
+            
+            result = await session.execute(stmt)
+            # Fetch all results and convert rows to dictionaries for easier consumption
+            return [row._asdict() for row in result.fetchall()]
+    
+    
+    @classmethod
+    async def get_sales_document_details(cls, db_session: sessionmaker, sales_id: int):
+        """
+        Retrieves detailed line-item information for a specific sales document.
+
+        This method fetches the goods code, item name, quantity, price per unit,
+        total sum per item, store/warehouse name, date/time of the sale, and
+        the sales document ID for a given sales document.
+
+        Args:
+            db_session: The SQLAlchemy sessionmaker object for database interaction.
+            sales_id: The ID of the sales document to retrieve details for.
+
+        Returns:
+            A list of dictionaries, where each dictionary represents a row from the
+            query result, containing the detailed sales document data.
+        """
+        async with db_session() as session:
+            stmt = select(
+                literal_column("g.gd_code").label("Код товара"),
+                literal_column("g.gd_name").label("Наименование"),
+                literal_column("op.opr_quantity").label("Количество"),
+                literal_column("a.oap_price1").label("Цена"),
+                (literal_column("op.opr_quantity") * literal_column("a.oap_price1")).label("Сумма"),
+                literal_column("o.obj_name").label("Магазин/Склад"),
+                literal_column("s.sls_datetime").label("Дата/Время"),
+                literal_column("s.sls_id").label("ID Док")
+            ).select_from(
+                text(
+                    "doc_sales AS s "
+                    "JOIN operations AS op ON op.opr_document = s.sls_id AND op.opr_type = 2 "
+                    "JOIN operations_additional_prop AS a ON a.oap_operation = op.opr_id "
+                    "JOIN dir_goods AS g ON g.gd_id = op.opr_good "
+                    "JOIN dir_objects AS o ON s.sls_object = o.obj_id"
+                )
+            ).where(
+                text("s.sls_id = :sales_id"),
+                text("s.sls_performed = 1"),
+                text("s.sls_deleted = 0")
+            ).order_by(
+                text("op.opr_id")
+            )
+
+            result = await session.execute(stmt, {"sales_id": sales_id})
+            # Fetch all results and convert rows to dictionaries for easier consumption
+            return [row._asdict() for row in result.fetchall()]
