@@ -4,6 +4,7 @@ from typing import List, Tuple
 import openpyxl
 from openpyxl.styles import Font, Alignment, Border, Side, PatternFill
 from openpyxl.utils import get_column_letter
+from num2words import num2words
 
 
 async def generate_invoice_excel(
@@ -141,6 +142,164 @@ async def generate_invoice_excel(
     filepath = os.path.join(output_dir, filename)
     wb.save(filepath)
     
+    return filepath
+
+
+async def generate_reconciliation_act_excel(
+    act_data: list,
+    company1: str,
+    company2: str,
+    period_start: str,
+    period_end: str,
+    saldo_start: float,
+    saldo_end: float,
+    output_dir: str = "invoices"
+) -> str:
+    """
+    Генерирует акт сверки в Excel формате по примеру с фото.
+    Args:
+        act_data: список словарей с данными по операциям (выход get_customer_sales_summary)
+        company1: название первой стороны (например, AVTOLIDER)
+        company2: название второй стороны
+        period_start: дата начала периода (строка)
+        period_end: дата конца периода (строка)
+        saldo_start: начальное сальдо
+        saldo_end: конечное сальдо
+        output_dir: папка для сохранения
+    Returns:
+        Путь к созданному Excel-файлу
+    """
+    os.makedirs(output_dir, exist_ok=True)
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Акт сверки"
+
+    # Стили
+    bold = Font(bold=True, size=12)
+    big_bold = Font(bold=True, size=14)
+    center = Alignment(horizontal="center", vertical="center")
+    right = Alignment(horizontal="right", vertical="center")
+    thin = Side(border_style="thin", color="000000")
+    border = Border(left=thin, right=thin, top=thin, bottom=thin)
+
+    # Заголовок
+    ws.merge_cells('C3:F3')
+    ws['C3'] = "Акт сверки"
+    ws['C3'].font = big_bold
+    ws['C3'].alignment = center
+
+    ws.merge_cells('C4:F4')
+    ws['C4'] = f"взаимных расчетов за период: {period_start} - {period_end}"
+    ws['C4'].alignment = center
+    ws.merge_cells('C5:F5')
+    ws['C5'] = f"между: {company1} и {company2}"
+    ws['C5'].alignment = center
+
+    ws.merge_cells('B7:G7')
+    ws['B7'] = f"Мы, нижеподписавшиеся, {company1} с одной стороны, и {company2}, с другой стороны,\nсоставили данный акт сверки в том, что, состояние взаимных расчетов по данным учета следующее:"
+    ws['B7'].alignment = Alignment(wrap_text=True)
+
+    # Таблица
+    ws['B9'] = "Дата"
+    ws['C9'] = "Документ"
+    ws['D9'] = f"{company1}"
+    ws['E9'] = "Дебет"
+    ws['F9'] = "долг"
+    ws['G9'] = f"{company2}"
+    ws['H9'] = "Дебет"
+    ws['I9'] = "Кредит"
+    for col in range(2, 10):
+        ws.cell(row=9, column=col).font = bold
+        ws.cell(row=9, column=col).alignment = center
+        ws.cell(row=9, column=col).border = border
+
+    # Сальдо начальное
+    ws.merge_cells('B10:C10')
+    ws['B10'] = "Сальдо начальное"
+    ws['D10'] = f"{saldo_start:,.2f}"
+    ws['E10'] = "0.00"
+    ws['F10'] = "0.00"
+    ws['G10'] = "0.00"
+    ws['H10'] = "0.00"
+    ws['I10'] = "0.00"
+    for col in range(2, 10):
+        ws.cell(row=10, column=col).alignment = center
+        ws.cell(row=10, column=col).border = border
+
+    # Операции
+    row = 11
+    for op in act_data:
+        ws[f'B{row}'] = op['Дата'].strftime('%-m/%-d/%Y') if hasattr(op['Дата'], 'strftime') else str(op['Дата'])
+        ws[f'C{row}'] = op['Документ']
+        ws[f'D{row}'] = f"{op['Сумма']:,.2f}"
+        ws[f'E{row}'] = "0.00"
+        ws[f'F{row}'] = "0.00"
+        ws[f'G{row}'] = f"{op['Оплачено']:,.2f}"
+        ws[f'H{row}'] = f"{op['Долг']:,.2f}"
+        ws[f'I{row}'] = "0.00"
+        for col in range(2, 10):
+            ws.cell(row=row, column=col).alignment = center
+            ws.cell(row=row, column=col).border = border
+        row += 1
+
+    # Обороты за период
+    ws.merge_cells(f'B{row}:C{row}')
+    ws[f'B{row}'] = "Обороты за период"
+    ws[f'D{row}'] = f"{sum(op['Сумма'] for op in act_data):,.2f}"
+    ws[f'E{row}'] = f"{sum(op['Оплачено'] for op in act_data):,.2f}"
+    ws[f'F{row}'] = f"{sum(op['Долг'] for op in act_data):,.2f}"
+    ws[f'G{row}'] = f"{sum(op['Оплачено'] for op in act_data):,.2f}"
+    ws[f'H{row}'] = f"{sum(op['Долг'] for op in act_data):,.2f}"
+    ws[f'I{row}'] = f"{sum(op['Сумма'] for op in act_data):,.2f}"
+    for col in range(2, 10):
+        ws.cell(row=row, column=col).alignment = center
+        ws.cell(row=row, column=col).font = bold
+        ws.cell(row=row, column=col).border = border
+    row += 1
+
+    # Сальдо конечное
+    ws.merge_cells(f'B{row}:C{row}')
+    ws[f'B{row}'] = "Сальдо конечное"
+    ws[f'D{row}'] = f"{saldo_end:,.2f}"
+    ws[f'E{row}'] = "0.00"
+    ws[f'F{row}'] = "0.00"
+    ws[f'G{row}'] = "0.00"
+    ws[f'H{row}'] = "0.00"
+    ws[f'I{row}'] = f"{saldo_end:,.2f}"
+    for col in range(2, 10):
+        ws.cell(row=row, column=col).alignment = center
+        ws.cell(row=row, column=col).font = bold
+        ws.cell(row=row, column=col).border = border
+    row += 2
+
+    # Итоговая строка с суммой прописью
+    sum_words = num2words(abs(saldo_end), lang='ru').capitalize()
+    if saldo_end < 0:
+        sum_words = f"минус {sum_words}"
+    ws.merge_cells(f'B{row}:I{row}')
+    ws[f'B{row}'] = f"В пользу {company2} {saldo_end:,.2f} сум ({sum_words} сум)"
+    ws[f'B{row}'].font = bold
+    row += 2
+
+    # Подписи
+    ws[f'B{row}'] = f"От {company1}"
+    ws[f'G{row}'] = f"От {company2}"
+    row += 2
+    ws[f'B{row}'] = "Директор"
+    ws[f'G{row}'] = "Директор"
+    row += 2
+    ws[f'B{row}'] = "М.П."
+    ws[f'G{row}'] = "М.П."
+
+    # Ширина колонок
+    widths = [5, 18, 40, 15, 15, 15, 15, 15, 15]
+    for idx, width in enumerate(widths, 1):
+        ws.column_dimensions[get_column_letter(idx)].width = width
+
+    # Сохраняем файл
+    filename = f"reconciliation_act_{company1}_{company2}_{period_start}_{period_end}.xlsx"
+    filepath = os.path.join(output_dir, filename)
+    wb.save(filepath)
     return filepath
 
 

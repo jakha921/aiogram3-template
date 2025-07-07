@@ -10,3 +10,19 @@ class AdminInvoicesFilter(StatesGroup):
     month = State()
     invoices_list = State()
     invoice_details = State()
+
+
+class ReconciliationActStates(StatesGroup):
+    year = State()
+    month = State()
+    confirm = State()
+
+
+class UserReconciliationStates(StatesGroup):
+    year = State()
+    month = State()
+
+
+class UserInvoicesStates(StatesGroup):
+    year = State()
+    month = State()

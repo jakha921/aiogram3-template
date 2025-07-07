@@ -7,11 +7,12 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import FSInputFile
 from loguru import logger
 
-from tgbot.keyboards.inline import user_menu_kb_inline, month_kb_inline
+from tgbot.keyboards.inline import user_menu_kb_inline, month_kb_inline, user_reconciliation_years_kb_inline, user_reconciliation_months_kb_inline, user_invoices_years_kb_inline, user_invoices_months_kb_inline
 from tgbot.keyboards.reply import phone_number_kb
 from tgbot.models.models import TGUser
-from tgbot.states import GetPhone
-from tgbot.misc.slope_tempalte import generate_invoice_excel
+from tgbot.states import GetPhone, UserReconciliationStates, UserInvoicesStates
+from tgbot.misc.slope_tempalte import generate_invoice_excel, generate_reconciliation_act_excel
+from tgbot.services.user_service import UserService
 
 router = Router(name=__name__)
 
@@ -23,7 +24,8 @@ async def user_start(msg: types.Message, state: FSMContext):
     if await state.get_state():
         await state.clear()
 
-    user: TGUser = await TGUser.get_user(msg.bot.db, msg.from_user.id)
+    user_service = UserService(msg.bot.db)
+    user = await user_service.get_user_by_telegram_id(msg.from_user.id)
     print('user', user)
     print('user', user.phone)
 
@@ -73,11 +75,8 @@ async def get_user_phone(msg: types.Message, state: FSMContext):
 
     # save phone number to db
     if user_phone:
-        user = await TGUser.update_user(
-            msg.bot.db,
-            msg.from_user.id,
-            phone=user_phone
-        )
+        user_service = UserService(msg.bot.db)
+        user = await user_service.update_user_phone(msg.from_user.id, user_phone)
         await msg.answer(f"Ваш номер телефона сохранен: {user_phone}")
 
         await msg.answer(f"Добро пожаловать, {msg.from_user.full_name}!", reply_markup=await user_menu_kb_inline())
@@ -108,62 +107,157 @@ async def get_contact(call: types.CallbackQuery):
     await call.message.answer("🏠 Главное меню", reply_markup=await user_menu_kb_inline())
 
 
-async def get_months_btn(call: types.CallbackQuery):
-    logger.info(f"User {call.from_user.id} send {call.data}")
-    await call.message.edit_text("Выберите месяц 👇", reply_markup=await month_kb_inline())
-
-
 async def get_main_menu(call: types.CallbackQuery):
     logger.info(f"User {call.from_user.id} send {call.data}")
     await call.message.edit_text("🏠 Главное меню", reply_markup=await user_menu_kb_inline())
 
-async def get_user_invoice(call: types.CallbackQuery):
-    logger.info(f"User {call.from_user.id} sent {call.data}")
-    month = call.data.split('_')[-2]
-    month_name = call.data.split('_')[-1]
+
+async def user_invoices_start(call: types.CallbackQuery, state: FSMContext):
+    """Начать процесс просмотра накладных пользователя"""
+    logger.info(f"User {call.from_user.id} started invoices flow")
+    await state.set_state(UserInvoicesStates.year)
+    await call.message.edit_text("📅 Выберите год для накладных:", reply_markup=await user_invoices_years_kb_inline())
+
+
+async def user_reconciliation_start(call: types.CallbackQuery, state: FSMContext):
+    """Начать процесс акта сверки пользователя"""
+    logger.info(f"User {call.from_user.id} started reconciliation flow")
+    await state.set_state(UserReconciliationStates.year)
+    await call.message.edit_text("📅 Выберите год для акта сверки:", reply_markup=await user_reconciliation_years_kb_inline())
+
+
+async def user_reconciliation_year(call: types.CallbackQuery, state: FSMContext):
+    """Обработка выбора года для акта сверки пользователя"""
+    year = call.data.split('_')[-1]
+    await state.update_data(user_recon_year=year)
+    await state.set_state(UserReconciliationStates.month)
+    
+    logger.info(f"User {call.from_user.id} selected year: {year}")
+    await call.message.edit_text(f"📅 Выбран год: {year}\n\nТеперь выберите месяц:", 
+                                reply_markup=await user_reconciliation_months_kb_inline())
+
+
+async def user_reconciliation_month(call: types.CallbackQuery, state: FSMContext):
+    """Обработка выбора месяца и генерация акта сверки пользователя"""
+    month = call.data.split('_')[-1]
+    data = await state.get_data()
+    year = data.get('user_recon_year')
+    
+    logger.info(f"User {call.from_user.id} selected month: {month} for year: {year}")
+    
+    # Получаем пользователя
+    user_service = UserService(call.bot.db)
+    user = await user_service.get_user_by_telegram_id(call.from_user.id)
+    
+    if not user.phone:
+        await call.message.edit_text("❌ Номер телефона не найден. Обратитесь к администратору.")
+        return
+    
+    # Показываем загрузку
+    await call.message.edit_text("🔄 Генерируем акт сверки...")
+    
+    try:
+        # Получаем данные акта сверки для пользователя
+        summary = await user_service.get_user_reconciliation(user.phone, int(year), int(month))
+        
+        if not summary:
+            await call.message.edit_text(
+                f"❌ За {month}/{year} данные для акта сверки не найдены",
+                reply_markup=await user_reconciliation_months_kb_inline()
+            )
+            return
+        
+        # Формируем текст акта сверки
+        header_text = user_service.format_reconciliation_summary(summary, user.phone, year, month)
+        await call.message.edit_text(header_text)
+        
+        # Получаем название покупателя
+        customer_name = await user_service.get_customer_name(user.phone)
+        
+        # Получаем параметры для Excel
+        total_debt = sum(float(row.get('Долг', 0) or 0) for row in summary)
+        excel_params = user_service.get_reconciliation_excel_params(customer_name, int(year), int(month), total_debt)
+        
+        # Генерируем Excel файл акта сверки
+        file_path = await generate_reconciliation_act_excel(
+            act_data=summary,
+            **excel_params
+        )
+        
+        # Отправляем файл
+        excel_file = FSInputFile(file_path)
+        await call.message.answer_document(
+            excel_file,
+            caption=f"📄 Ваш акт сверки за {excel_params['period_start']} - {excel_params['period_end']} готов!"
+        )
+        
+        # Удаляем файл
+        if os.path.exists(file_path):
+            os.remove(file_path)
+        
+        # Возвращаем в главное меню
+        await call.message.answer(
+            "🏠 <b>Главное меню</b>",
+            reply_markup=await user_menu_kb_inline(),
+        )
+        
+    except Exception as e:
+        logger.error(f"Error generating user reconciliation: {e}")
+        await call.message.edit_text(
+            "❌ Ошибка при генерации акта сверки",
+            reply_markup=await user_reconciliation_months_kb_inline()
+        )
+
+
+async def user_invoices_year(call: types.CallbackQuery, state: FSMContext):
+    """Обработка выбора года для накладных пользователя"""
+    year = call.data.split('_')[-1]
+    await state.update_data(user_invoice_year=year)
+    await state.set_state(UserInvoicesStates.month)
+    
+    logger.info(f"User {call.from_user.id} selected year: {year}")
+    await call.message.edit_text(f"📅 Выбран год: {year}\n\nТеперь выберите месяц:", 
+                                reply_markup=await user_invoices_months_kb_inline())
+
+
+async def user_invoices_month(call: types.CallbackQuery, state: FSMContext):
+    """Обработка выбора месяца и генерация накладной пользователя"""
+    month = call.data.split('_')[-1]
+    data = await state.get_data()
+    year = data.get('user_invoice_year')
+    
+    logger.info(f"User {call.from_user.id} selected month: {month} for year: {year}")
+    
+    # Получаем пользователя
+    user_service = UserService(call.bot.db)
+    user = await user_service.get_user_by_telegram_id(call.from_user.id)
+    
+    if not user.phone:
+        await call.message.edit_text("❌ Номер телефона не найден. Обратитесь к администратору.")
+        return
+    
     # Подтверждаем выбор месяца
+    month_names = {
+        "01": "Январь", "02": "Февраль", "03": "Март", "04": "Апрель",
+        "05": "Май", "06": "Июнь", "07": "Июль", "08": "Август",
+        "09": "Сентябрь", "10": "Октябрь", "11": "Ноябрь", "12": "Декабрь"
+    }
+    month_name = month_names.get(month, month)
+    
     await call.message.edit_text(
-        # replave month to month name
-        f"📅 <b>Вы выбрали месяц:</b> {month_name}",
+        f"📅 <b>Вы выбрали:</b> {month_name} {year}",
     )
 
-    # Получаем пользователя и данные по счету
-    user: TGUser = await TGUser.get_user(call.bot.db, call.from_user.id)
-    print('user', user.phone)
-    print('month', month)
-    res = await TGUser.get_user_invoice(call.bot.db, user.phone, month)
-    # print('-' * 10)
-    # pprint(res)
+    # Получаем данные по счету
+    res = await user_service.get_user_invoice(user.phone, month)
 
     if not res:
         await call.message.answer(
             "❗️ <b>За указанный месяц счёт не найден.</b>",
         )
     else:
-        # Собираем все строки в один текст
-        # lines = []
-        # for shop, code, name, dt, typ, qty, price, total, status in res:
-        #     qty_str = str(int(qty)) if qty.is_integer() else str(qty)
-        #     price_str = f"{price:,.0f}".replace(",", " ") + " сум"
-        #     total_str = f"{total:,.0f}".replace(",", " ") + " сум"
-        #     lines.append(
-        #         f"🏬 <b>{shop}</b>\n"
-        #         f"📋 {name}\n"
-        #         f"🕒 {dt.strftime('%Y-%m-%d %H:%M:%S')}\n"
-        #         f"🔢 Количество: {qty_str}\n"
-        #         f"💵 Цена: {price_str}\n"
-        #         f"💰 Сумма: {total_str}\n"
-        #         "--------------------------------"
-        #     )
-        # text = (
-        #     f"<b>📑 Счёт за {month}:</b>\n\n" +
-        #     "\n\n".join(lines)
-        # )
-        # await call.message.answer(text)
-        
         wait = await call.message.answer(
             "📊 Генерируем Excel файл...",
-            # reply_markup=await user_menu_kb_inline(),
         )
         
         # generate excel
@@ -174,7 +268,7 @@ async def get_user_invoice(call: types.CallbackQuery):
         excel_file = FSInputFile(excel_path)
         await call.message.answer_document(
             excel_file,
-            caption=f"📄 Ваша накладная за {month_name} готова!"
+            caption=f"📄 Ваша накладная за {month_name} {year} готова!"
         )
         # delete excel file
         if os.path.exists(excel_path):
@@ -190,55 +284,12 @@ async def get_user_invoice(call: types.CallbackQuery):
     )
 
 
-# async def get_invoice_excel(msg: types.Message):
-#     logger.info(f"User {msg.from_user.id} sent {msg.text}")
-#     await msg.answer("🔍 Проверяем данные...")
-
-#     try:
-#         # get user
-#         user: TGUser = await TGUser.get_user(msg.bot.db, msg.from_user.id)
-#         print('user', user.phone)
-
-#         # get invoice
-#         res = await TGUser.get_user_invoice(msg.bot.db, user.phone, '12')
-#         print('-' * 10)
-#         pprint(res)
-
-#         if not res:
-#             await msg.answer("❌ Накладные за декабрь не найдены")
-#             return
-
-#         await msg.answer("📊 Генерируем Excel файл...")
-
-#         # generate excel
-#         excel_path = await generate_invoice_excel(invoice_data=res, invoice_number=user.phone)
-#         print('excel', excel_path)
-
-#         # send excel file using FSInputFile
-#         excel_file = FSInputFile(excel_path)
-#         await msg.answer_document(
-#             excel_file,
-#             caption="📄 Ваша накладная готова!"
-#         )
-
-#         # удаляем временный файл после отправки
-#         if os.path.exists(excel_path):
-#             os.remove(excel_path)
-            
-#     except Exception as e:
-#         logger.error(f"Error generating invoice: {e}")
-#         await msg.answer(f"❌ Произошла ошибка при генерации накладной: {str(e)}")
-
 # register handlers
 def register_users():
     router.message.register(
         user_start,
         F.text == "/start",
     )
-    # router.message.register(
-    #     get_invoice_excel,
-    #     F.text == '/invoice'
-    # )
     router.message.register(
         get_user_phone,
         GetPhone.phone
@@ -252,16 +303,33 @@ def register_users():
         F.data == 'btn_contact'
     )
     router.callback_query.register(
-        get_months_btn,
-        F.data == 'btn_invoices'
-    )
-    router.callback_query.register(
         get_main_menu,
         F.data == 'btn_main_menu'
     )
+
     router.callback_query.register(
-        get_user_invoice,
-        F.data.startswith('btn_month_')
+        user_reconciliation_start,
+        F.data == 'btn_user_reconciliation'
+    )
+    router.callback_query.register(
+        user_reconciliation_year,
+        F.data.startswith('btn_user_recon_year_')
+    )
+    router.callback_query.register(
+        user_reconciliation_month,
+        F.data.startswith('btn_user_recon_month_')
+    )
+    router.callback_query.register(
+        user_invoices_year,
+        F.data.startswith('btn_user_invoice_year_')
+    )
+    router.callback_query.register(
+        user_invoices_month,
+        F.data.startswith('btn_user_invoice_month_')
+    )
+    router.callback_query.register(
+        user_invoices_start,
+        F.data == 'btn_user_invoices'
     )
 
     return router

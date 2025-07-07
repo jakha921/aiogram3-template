@@ -66,11 +66,11 @@ async def month_kb_inline():
 async def user_menu_kb_inline():
     """
     User menu inline keyboard
-    Регистрация, Накладная, Контакт
+    Накладные, Акт сверки, Контакт
     """
     keyboard = InlineKeyboardBuilder()
-    keyboard.add(InlineKeyboardButton(text="📝 Регистрация", callback_data="btn_register")),
-    keyboard.add(InlineKeyboardButton(text="📦 Накладные", callback_data="btn_invoices")),
+    keyboard.add(InlineKeyboardButton(text="📦 Накладные", callback_data="btn_user_invoices")),
+    keyboard.add(InlineKeyboardButton(text="📄 Акт сверки", callback_data="btn_user_reconciliation")),
     keyboard.add(InlineKeyboardButton(text="📞 Контакт", callback_data="btn_contact"))
 
     return keyboard.adjust(2).as_markup()
@@ -81,8 +81,8 @@ async def admin_menu_kb_inline():
     """Admin main menu inline keyboard"""
     keyboard = InlineKeyboardBuilder()
     keyboard.add(InlineKeyboardButton(text="📦 Накладные", callback_data="btn_admin_invoices"))
+    keyboard.add(InlineKeyboardButton(text="📄 Акт сверки", callback_data="btn_admin_reconciliation_menu"))
     keyboard.add(InlineKeyboardButton(text="📊 Статистика", callback_data="btn_admin_stats"))
-    
     return keyboard.adjust(1).as_markup()
 
 
@@ -151,3 +151,89 @@ async def admin_invoice_details_kb_inline(sales_id: int):
     keyboard.add(InlineKeyboardButton(text="⬅️ К списку накладных", callback_data="btn_admin_back_to_list"))
     
     return keyboard.adjust(1).as_markup()
+
+
+async def admin_reconciliation_kb_inline(sales_id: int):
+    keyboard = InlineKeyboardBuilder()
+    keyboard.add(InlineKeyboardButton(text="📄 Скачать акт сверки", callback_data=f"btn_admin_reconciliation_{sales_id}"))
+    keyboard.add(InlineKeyboardButton(text="⬅️ Назад", callback_data="btn_admin_menu"))
+    return keyboard.adjust(1).as_markup()
+
+
+def years_keyboard(years):
+    kb = InlineKeyboardMarkup(row_width=3)
+    for year in years:
+        kb.insert(InlineKeyboardButton(str(year), callback_data=f"act_year_{year}"))
+    return kb
+
+def months_keyboard(months, year):
+    kb = InlineKeyboardMarkup(row_width=4)
+    for month in months:
+        kb.insert(InlineKeyboardButton(str(month), callback_data=f"act_month_{year}_{month}"))
+    return kb
+
+def customers_keyboard(customers, year, month):
+    kb = InlineKeyboardMarkup(row_width=1)
+    for c in customers:
+        kb.insert(InlineKeyboardButton(f"{c['name']} ({c['phone']})", callback_data=f"act_customer_{year}_{month}_{c['phone']}"))
+    return kb
+
+
+async def user_reconciliation_years_kb_inline():
+    """Years selection for user reconciliation"""
+    keyboard = InlineKeyboardBuilder()
+    current_year = datetime.now().year
+    
+    # Добавляем последние 5 лет
+    for year in range(current_year, current_year - 5, -1):
+        keyboard.add(InlineKeyboardButton(text=str(year), callback_data=f"btn_user_recon_year_{year}"))
+    
+    keyboard.add(InlineKeyboardButton(text="⬅️ Назад", callback_data="btn_main_menu"))
+    return keyboard.adjust(2).as_markup()
+
+
+async def user_reconciliation_months_kb_inline():
+    """Months selection for user reconciliation"""
+    keyboard = InlineKeyboardBuilder()
+    months = {
+        "01": "Январь", "02": "Февраль", "03": "Март", "04": "Апрель",
+        "05": "Май", "06": "Июнь", "07": "Июль", "08": "Август",
+        "09": "Сентябрь", "10": "Октябрь", "11": "Ноябрь", "12": "Декабрь"
+    }
+    
+    for month, name in months.items():
+        keyboard.add(InlineKeyboardButton(text=name, callback_data=f"btn_user_recon_month_{month}"))
+    
+    keyboard.add(InlineKeyboardButton(text="⬅️ Назад", callback_data="btn_user_reconciliation"))
+    keyboard.add(InlineKeyboardButton(text="🏠 Главное меню", callback_data="btn_main_menu"))
+    return keyboard.adjust(3).as_markup()
+
+
+async def user_invoices_years_kb_inline():
+    """Years selection for user invoices"""
+    keyboard = InlineKeyboardBuilder()
+    current_year = datetime.now().year
+    
+    # Добавляем последние 5 лет
+    for year in range(current_year, current_year - 5, -1):
+        keyboard.add(InlineKeyboardButton(text=str(year), callback_data=f"btn_user_invoice_year_{year}"))
+    
+    keyboard.add(InlineKeyboardButton(text="⬅️ Назад", callback_data="btn_main_menu"))
+    return keyboard.adjust(2).as_markup()
+
+
+async def user_invoices_months_kb_inline():
+    """Months selection for user invoices"""
+    keyboard = InlineKeyboardBuilder()
+    months = {
+        "01": "Январь", "02": "Февраль", "03": "Март", "04": "Апрель",
+        "05": "Май", "06": "Июнь", "07": "Июль", "08": "Август",
+        "09": "Сентябрь", "10": "Октябрь", "11": "Ноябрь", "12": "Декабрь"
+    }
+    
+    for month, name in months.items():
+        keyboard.add(InlineKeyboardButton(text=name, callback_data=f"btn_user_invoice_month_{month}"))
+    
+    keyboard.add(InlineKeyboardButton(text="⬅️ Назад", callback_data="btn_user_invoices"))
+    keyboard.add(InlineKeyboardButton(text="🏠 Главное меню", callback_data="btn_main_menu"))
+    return keyboard.adjust(3).as_markup()

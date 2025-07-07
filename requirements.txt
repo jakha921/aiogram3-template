@@ -16,6 +16,7 @@ loguru==0.7.3
 magic-filter==1.0.12
 multidict==6.1.0
 openpyxl==3.1.5 
+num2words==0.5.14
 propcache==0.3.0
 pydantic==2.10.6
 pydantic_core==2.27.2

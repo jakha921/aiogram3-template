@@ -1,4 +1,4 @@
-from sqlalchemy import Column, BigInteger, String, select, func, insert, update, literal_column, text
+from sqlalchemy import Column, BigInteger, String, select, func, insert, update, literal_column, text, case
 from sqlalchemy.orm import sessionmaker
 
 from tgbot.services.db_base import Base
@@ -165,24 +165,34 @@ class TGUser(Base):
             result = await session.execute(stmt, {"phone": phone, "month": month})
             return result.fetchall()
 
-
     @classmethod
-    async def get_all_sales_invoices_summary(cls, db_session: sessionmaker):
+    async def get_all_sales_invoices_summary(cls, db_session: sessionmaker, year: int = None, month: int = None):
         """
-        Retrieves a summary of all sales invoices from the database.
-
-        This method fetches the sales ID, datetime, operation type, store/warehouse name,
-        document status, customer name, and the total sum of the sale for all
-        performed and non-deleted sales.
+        Retrieves a summary of all sales invoices from the database with optional filtering.
+        Оптимизированная версия с фильтрацией на уровне БД.
 
         Args:
             db_session: The SQLAlchemy sessionmaker object for database interaction.
+            year: Optional year filter
+            month: Optional month filter
 
         Returns:
             A list of dictionaries, where each dictionary represents a row from the
             query result, containing the summarized sales invoice data.
         """
         async with db_session() as session:
+            # Базовые условия WHERE
+            where_conditions = [
+                text("s.sls_performed = 1"),
+                text("s.sls_deleted = 0")
+            ]
+            
+            # Добавляем фильтры по году и месяцу если переданы
+            if year is not None:
+                where_conditions.append(text("EXTRACT(YEAR FROM s.sls_datetime) = :year"))
+            if month is not None:
+                where_conditions.append(text("EXTRACT(MONTH FROM s.sls_datetime) = :month"))
+            
             stmt = select(
                 literal_column("s.sls_id").label("Код"),
                 literal_column("s.sls_datetime").label("Дата/время"),
@@ -201,8 +211,7 @@ class TGUser(Base):
                     "JOIN operations_additional_prop AS a ON a.oap_operation = op.opr_id"
                 )
             ).where(
-                text("s.sls_performed = 1"),
-                text("s.sls_deleted = 0")
+                *where_conditions
             ).group_by(
                 text("s.sls_id"),
                 text("s.sls_datetime"),
@@ -214,10 +223,23 @@ class TGUser(Base):
                 text("s.sls_id DESC")
             )
             
-            result = await session.execute(stmt)
+            # Параметры для фильтров
+            params = {}
+            if year is not None:
+                params["year"] = year
+            if month is not None:
+                params["month"] = month
+            
+            result = await session.execute(stmt, params)
             # Fetch all results and convert rows to dictionaries for easier consumption
             return [row._asdict() for row in result.fetchall()]
     
+    @classmethod
+    async def get_sales_invoices_by_period(cls, db_session: sessionmaker, year: int, month: int):
+        """
+        Получить накладные за конкретный период (оптимизированная версия)
+        """
+        return await cls.get_all_sales_invoices_summary(db_session, year=year, month=month)
     
     @classmethod
     async def get_sales_document_details(cls, db_session: sessionmaker, sales_id: int):
@@ -265,3 +287,157 @@ class TGUser(Base):
             result = await session.execute(stmt, {"sales_id": sales_id})
             # Fetch all results and convert rows to dictionaries for easier consumption
             return [row._asdict() for row in result.fetchall()]
+    
+    
+    @classmethod
+    async def get_customer_sales_summary(cls, db_session: sessionmaker, phone_number: str, year: int = None, month: int = None):
+        """
+        Retrieves a summary of sales for a given customer phone number,
+        including the total sales amount, paid amount, and remaining debt.
+        Фильтрует по году и месяцу, если переданы.
+        """
+        async with db_session() as session:
+            sales_sum_col = func.coalesce(
+                func.sum(literal_column("op.opr_quantity") * literal_column("a.oap_price1")),
+                0
+            ).label("Сумма")
+            paid_sum_col = func.coalesce(
+                func.sum(
+                    case(
+                        (literal_column("dco.cop_type").in_([1, 4]), literal_column("dco.cop_value")),
+                        else_=0
+                    )
+                ),
+                0
+            ).label("Оплачено")
+
+            where_clauses = [
+                text(
+                    "c.cstm_phone = :phone_number OR "
+                    "c.cstm_phone2 = :phone_number OR "
+                    "c.cstm_phone3 = :phone_number OR "
+                    "c.cstm_phone4 = :phone_number"
+                ),
+                text("s.sls_performed = 1"),
+                text("s.sls_deleted = 0")
+            ]
+            if year:
+                where_clauses.append(text("EXTRACT(YEAR FROM s.sls_datetime) = :year"))
+            if month:
+                where_clauses.append(text("EXTRACT(MONTH FROM s.sls_datetime) = :month"))
+
+            stmt = select(
+                literal_column("s.sls_datetime").label("Дата"),
+                func.concat(literal_column("'Реализация №'"), literal_column("s.sls_id")).label("Документ"),
+                sales_sum_col,
+                paid_sum_col,
+                (sales_sum_col - paid_sum_col).label("Долг"),
+                literal_column("s.sls_note").label("Примечание")
+            ).select_from(
+                text(
+                    "doc_sales AS s "
+                    "LEFT JOIN operations AS op ON op.opr_document = s.sls_id AND op.opr_type = 2 "
+                    "LEFT JOIN operations_additional_prop AS a ON a.oap_operation = op.opr_id "
+                    "LEFT JOIN doc_cash_operations AS dco ON dco.cop_payment = s.sls_id "
+                    "JOIN dir_customers AS c ON s.sls_customer = c.cstm_id"
+                )
+            ).where(
+                *where_clauses
+            ).group_by(
+                text("s.sls_id"),
+                text("s.sls_datetime"),
+                text("s.sls_note")
+            ).order_by(
+                text("s.sls_datetime DESC"),
+                text("s.sls_id DESC")
+            )
+
+            params = {"phone_number": phone_number}
+            if year:
+                params["year"] = year
+            if month:
+                params["month"] = month
+
+            result = await session.execute(stmt, params)
+            return [row._asdict() for row in result.fetchall()]
+
+    @classmethod
+    async def get_sales_years(cls, db_session: sessionmaker):
+        """
+        Получить список уникальных годов, в которых были продажи.
+        """
+        async with db_session() as session:
+            stmt = select(func.extract('year', literal_column('sls_datetime')).label('year')).select_from(text('doc_sales')).where(
+                text('sls_performed = 1'),
+                text('sls_deleted = 0')
+            ).group_by(text('year')).order_by(text('year DESC'))
+            result = await session.execute(stmt)
+            return [int(row.year) for row in result.fetchall() if row.year]
+
+    @classmethod
+    async def get_sales_months(cls, db_session: sessionmaker, year: int):
+        """
+        Получить список уникальных месяцев, в которых были продажи за указанный год.
+        """
+        async with db_session() as session:
+            stmt = select(func.extract('month', literal_column('sls_datetime')).label('month')).select_from(text('doc_sales')).where(
+                text('sls_performed = 1'),
+                text('sls_deleted = 0'),
+                text('EXTRACT(YEAR FROM sls_datetime) = :year')
+            ).group_by(text('month')).order_by(text('month'))
+            result = await session.execute(stmt, {'year': year})
+            return [int(row.month) for row in result.fetchall() if row.month]
+
+    @classmethod
+    async def get_customers_by_period(cls, db_session: sessionmaker, year: int, month: int = None):
+        """
+        Получить список покупателей, у которых были продажи за указанный год и (опционально) месяц.
+        """
+        async with db_session() as session:
+            where_clauses = [
+                text('s.sls_performed = 1'),
+                text('s.sls_deleted = 0'),
+                text('EXTRACT(YEAR FROM s.sls_datetime) = :year')
+            ]
+            params = {'year': year}
+            if month:
+                where_clauses.append(text('EXTRACT(MONTH FROM s.sls_datetime) = :month'))
+                params['month'] = month
+            stmt = select(
+                literal_column('c.cstm_id').label('id'),
+                literal_column('c.cstm_name').label('name'),
+                literal_column('c.cstm_phone').label('phone')
+            ).select_from(
+                text('doc_sales AS s JOIN dir_customers AS c ON s.sls_customer = c.cstm_id')
+            ).where(
+                *where_clauses
+            ).group_by(
+                text('c.cstm_id'),
+                text('c.cstm_name'),
+                text('c.cstm_phone')
+            ).order_by(text('c.cstm_name'))
+            result = await session.execute(stmt, params)
+            return [row._asdict() for row in result.fetchall()]
+
+    @classmethod
+    async def get_customer_name_by_phone(cls, db_session: sessionmaker, phone_number: str):
+        """
+        Получить название покупателя по номеру телефона.
+        """
+        async with db_session() as session:
+            stmt = select(
+                literal_column('c.cstm_name').label('name')
+            ).select_from(
+                text('dir_customers AS c')
+            ).where(
+                text(
+                    "c.cstm_phone = :phone_number OR "
+                    "c.cstm_phone2 = :phone_number OR "
+                    "c.cstm_phone3 = :phone_number OR "
+                    "c.cstm_phone4 = :phone_number"
+                )
+            ).limit(1)
+            
+            result = await session.execute(stmt, {"phone_number": phone_number})
+            row = result.fetchone()
+            return row.name if row else phone_number
